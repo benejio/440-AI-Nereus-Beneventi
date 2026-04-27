@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+.env
+env/
+.venv/
+
+# Runtime outputs
+Nereus-Captured/nereus_out/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
