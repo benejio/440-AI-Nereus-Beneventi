@@ -11,6 +11,8 @@ Repository layout
     ├── Nereus-Captured.py
     ├── clip_event_scorer.py
     ├── train_dogpoop_mobilenetv2.py
+    ├── mobilenetv2_dogpoop.pt
+    ├── yolov8.pt
     ├── tau.txt
     ├── class_indices.json
     └── Test Videos/
