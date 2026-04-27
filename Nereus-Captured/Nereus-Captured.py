@@ -1,4 +1,4 @@
-﻿"""
+"""
 Nereus-Captured.py
 
 Purpose:
@@ -125,28 +125,27 @@ MODEL_WEIGHTS = BASE_DIR / "mobilenetv2_dogpoop.pt"
 YOLO_WEIGHTS = BASE_DIR / "yolov8n.pt"
 
 # ---------- CONFIG ----------
-OUT_DIR = "nereus_out"          # Folder where snapshots, crops, and optional recorded video are saved
-SNAP_EVERY_MIN = 30             # Save a clean reference frame this often when the scene is idle
-MIN_MOTION_FRAMES = 2           # Number of consecutive frames with motion before motion is considered real
-MOTION_THRESH = 20              # Pixel-difference threshold used by frame differencing for motion detection
-DOG_CONF_THRESH = 0.45          # Minimum YOLO confidence required to accept a dog detection
-SQUAT_CONF_THRESH = 0.45        # Minimum classifier probability required to consider the dog in a poop/squat pose
-POST_CLEAR_COOLDOWN_SEC = 1.0   # How long to wait after the dog disappears before clearing event state
-POSE_HOLD_SEC = 0.04            # How long the squat condition must remain true before triggering the event
-# MIN_BOX_AREA = 50*50          # ignore tiny detections
-EMA_ALPHA = 0.3                 # prob smoothing; 0.2-0.4 works well
-TAU_ON_DELTA = 0.00             # enter when >= tau*
-TAU_OFF_DELTA = 0.2             # exit when < (tau* - delta)
-IOU_HOLD_MIN = 0.50             # require bbox IoU across frames during hold
-VEL_WIN = 3                     # frames to average motion
-VEL_THRESH = 1.0                # px/frame; below this = “stationary”
-AIM_SHIFT_FRAC_X = 0.28         # how much to shift horizontally (fraction of bbox w)
-AIM_SHIFT_FRAC_Y = 0.10         # how much to shift vertically   (fraction of bbox h)
-BUTT_BOTTOM_FRAC = 0.45         # portion of bbox height kept at bottom
-BUTT_EXT_FRAC   = 0.30          # extend below bbox
-BUTT_WIDTH_FRAC = 0.55          # width of the band (fraction of bbox w)
-HEADING_LOOKBACK = 12           # frames to look back for robust heading (≈0.4s at 30 fps)
-HEADING_MIN_PX   = 10           # require at least this many pixels net displacement
+OUT_DIR = str(BASE_DIR / "nereus_out")  # Folder where snapshots, crops, and optional recorded video are saved
+SNAP_EVERY_MIN = 30                     # Save a clean reference frame this often when the scene is idle
+MIN_MOTION_FRAMES = 2                   # Number of consecutive frames with motion before motion is considered real
+MOTION_THRESH = 20                      # Pixel-difference threshold used by frame differencing for motion detection
+DOG_CONF_THRESH = 0.45                  # Minimum YOLO confidence required to accept a dog detection
+SQUAT_CONF_THRESH = 0.45                # Minimum classifier probability required to consider the dog in a poop/squat pose
+POST_CLEAR_COOLDOWN_SEC = 1.0           # How long to wait after the dog disappears before clearing event state
+POSE_HOLD_SEC = 0.04                    # How long the squat condition must remain true before triggering the event
+EMA_ALPHA = 0.3                         # prob smoothing; 0.2-0.4 works well
+TAU_ON_DELTA = 0.00                     # enter when >= tau*
+TAU_OFF_DELTA = 0.2                     # exit when < (tau* - delta)
+IOU_HOLD_MIN = 0.50                     # require bbox IoU across frames during hold
+VEL_WIN = 3                             # frames to average motion
+VEL_THRESH = 1.0                        # px/frame; below this = “stationary”
+AIM_SHIFT_FRAC_X = 0.28                 # how much to shift horizontally (fraction of bbox w)
+AIM_SHIFT_FRAC_Y = 0.10                 # how much to shift vertically   (fraction of bbox h)
+BUTT_BOTTOM_FRAC = 0.45                 # portion of bbox height kept at bottom
+BUTT_EXT_FRAC   = 0.30                  # extend below bbox
+BUTT_WIDTH_FRAC = 0.55                  # width of the band (fraction of bbox w)
+HEADING_LOOKBACK = 12                   # frames to look back for robust heading (≈0.4s at 30 fps)
+HEADING_MIN_PX   = 10                   # require at least this many pixels net displacement
 
 
 os.makedirs(OUT_DIR, exist_ok=True)
@@ -276,9 +275,9 @@ def _load_class_indices():
 # ---------- DOG DETECTOR ----------
 class DogDetector:
     def __init__(self, conf=0.35):
-        self.model = YOLO("yolov8n.pt")   # COCO
+        self.model = YOLO(str(YOLO_WEIGHTS))   # COCO
         self.conf = conf
-        self.dog_idx = 16  # COCO dog
+        self.dog_idx = 16  # COCO class index for dog
 
     def infer(self, frame):
         res = self.model.predict(frame, conf=self.conf, verbose=False)[0]
@@ -539,8 +538,31 @@ class NereusWatch:
                     H, W = frame.shape[:2]
                     box_clf = expand_box(box, W, H, pad=0.18)
 
-
                     is_squat_raw, prob = self.squat.is_pooping_pose(frame, box_clf)
+
+                    # --- EMA smoothing ---
+                    if self.prob_ema is None:
+                        self.prob_ema = prob
+                    else:
+                        self.prob_ema = EMA_ALPHA * prob + (1 - EMA_ALPHA) * self.prob_ema
+
+                    # --- Hysteresis on smoothed prob ---
+                    if not self.is_squatting:
+                        is_squat = self.prob_ema >= self.tau_on
+                    else:
+                        is_squat = self.prob_ema >= self.tau_off
+                    self.is_squatting = is_squat
+
+                    # --- Pose hold timing ---
+                    now = datetime.now()
+                    if is_squat:
+                        if self.pose_hold_start is None:
+                            self.pose_hold_start = now
+                        held = (now - self.pose_hold_start).total_seconds()
+                    else:
+                        self.pose_hold_start = None
+                        self.lock_dir = None
+                        held = 0.0
 
                     x1c, y1c, x2c, y2c = map(int, box_clf)
                     clip_top = y1c + int(0.40 * (y2c - y1c))
@@ -548,7 +570,13 @@ class NereusWatch:
 
                     clip_label = "none"
                     clip_scores = {"pee": 0.0, "poop": 0.0, "neutral": 0.0}
-                    if clip_crop.size != 0 and self.prob_ema is not None and self.prob_ema >= 0.30:
+                    clip_allowed = (
+                        clip_crop.size != 0
+                        and is_squat
+                        and held >= POSE_HOLD_SEC
+                    )
+
+                    if clip_allowed:
                         clip_result = self.clip_scorer.score_bgr_crop(clip_crop)
                         clip_label = clip_result.label
                         clip_scores = clip_result.scores
@@ -585,19 +613,6 @@ class NereusWatch:
                         clip_event_label = "none"
                         clip_event_score = 0.0
                         clip_is_event = False
-
-                    # --- EMA smoothing ---
-                    if self.prob_ema is None:
-                        self.prob_ema = prob
-                    else:
-                        self.prob_ema = EMA_ALPHA * prob + (1 - EMA_ALPHA) * self.prob_ema
-
-                    # --- Hysteresis on smoothed prob ---
-                    if not self.is_squatting:
-                        is_squat = self.prob_ema >= self.tau_on
-                    else:
-                        is_squat = self.prob_ema >= self.tau_off
-                    self.is_squatting = is_squat
 
                     draw_box(frame, box, (0,255,0), None)
 
@@ -664,25 +679,16 @@ class NereusWatch:
                     self.prev_center = cx
 
                     if is_squat:
-                        if self.pose_hold_start is None:
-                            self.pose_hold_start = now
-                        # Continuously refresh lock_dir from robust heading during hold
-                        self.lock_dir = self._robust_heading()
-
-                        held = (now - self.pose_hold_start).total_seconds()
                         cv2.putText(frame, f"squat hold: {held:.1f}/{POSE_HOLD_SEC:.1f}s",
                                     (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,255), 2)
 
                         if held >= POSE_HOLD_SEC:
-                            # 1) recent, tighter heading
                             ux_use, uy_use = self._robust_heading(lookback=4, min_px=2)
 
-                            # 2) blend with lock_dir if we have one
                             if self.lock_dir is not None:
-                                ux_use = 0.6*ux_use + 0.4*self.lock_dir[0]
-                                uy_use = 0.6*uy_use + 0.4*self.lock_dir[1]
+                                ux_use = 0.6 * ux_use + 0.4 * self.lock_dir[0]
+                                uy_use = 0.6 * uy_use + 0.4 * self.lock_dir[1]
 
-                            # 3) fallback vote when nearly stationary
                             if abs(ux_use) < 0.15:
                                 ux_vote = self._face_lr_from_edges(frame, box)
                                 if ux_vote != 0.0:
@@ -695,7 +701,6 @@ class NereusWatch:
                                 self.state = States.SQUAT
                                 self.pose_hold_start = None
                                 print(f"[POSE] Held {POSE_HOLD_SEC:.2f}s (ema={self.prob_ema:.2f}); region @ {reg}.")
-
                     else:
                         self.pose_hold_start = None
                         self.lock_dir = None
@@ -788,7 +793,7 @@ class NereusWatch:
 
 
 if __name__ == "__main__":
-    # NEW: CLI to select source (camera index or video file)
+    # CLI to select source (camera index or video file)
     p = argparse.ArgumentParser()
     p.add_argument("--src", default="0",
                    help="Camera index (e.g., 0) or path to a video file")
