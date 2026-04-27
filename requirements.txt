@@ -1,0 +1,17 @@
+# Core runtime dependencies
+numpy>=1.24
+opencv-python>=4.8
+Pillow>=10.0
+ultralytics>=8.0
+
+# PyTorch stack
+# For GPU builds, install the correct torch/torchvision pair from https://pytorch.org/get-started/locally/
+torch>=2.1
+torchvision>=0.16
+
+# CLIP support
+git+https://github.com/openai/CLIP.git
+
+# Training / evaluation utilities
+matplotlib>=3.7
+scikit-learn>=1.3
