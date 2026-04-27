@@ -15,7 +15,7 @@ The dataset is organized into three main folders: `train`, `val`, and `test`. Ea
 ```
 dpd2024/
   ├── train/
-  │   ├── poop/\n
+  │   ├── poop/
   │   └── notpoop/
   ├── val/
   │   ├── poop/
